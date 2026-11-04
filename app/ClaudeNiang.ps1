@@ -738,12 +738,12 @@ function Test-CNAlerts {
 }
 function Update-CNBridgeQuick {
     try {
-        $p = Join-Path $DataDir 'bridge.json'
-        if (-not (Test-Path -LiteralPath $p)) { return }
-        $mt = (Get-Item -LiteralPath $p).LastWriteTimeUtc
-        if ($S.BridgeMtime -and $mt -eq $S.BridgeMtime) { return }
+        $f = Get-CNBridgeFile $DataDir   # 可能在 Claude App 的重定向目录里，见 Collector.ps1
+        if (-not $f) { return }
+        $key = $f.FullName + '|' + $f.LastWriteTimeUtc.Ticks
+        if ($S.BridgeKey -eq $key) { return }
         $b = Read-CNBridge $DataDir   # 正在写入时可能读到半截：解析失败就等下一秒再读
-        $S.BridgeMtime = $mt
+        $S.BridgeKey = $key
         if ($b) { Update-CNData @{ bridge = $b } }
     } catch { }
 }

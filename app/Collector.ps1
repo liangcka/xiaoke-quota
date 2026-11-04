@@ -192,9 +192,30 @@ function Get-CNLocalStats($State) {
 
 # ---------------------------------------------------------------- 状态栏桥接
 
+# Claude 桌面 App 是 MSIX 打包应用：插件在 App 里写 %LOCALAPPDATA%\ClaudeNiang\bridge.json 时，Windows 会把它重定向到
+# %LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Local\ClaudeNiang\bridge.json，在 App 外启动的挂件按原路径读不到。
+# 所以两处都找，取最近写入的一份（终端里的 Claude Code / 状态栏桥接写的是原路径）。
+function Get-CNBridgeFile([string]$DataDir) {
+    $paths = @(Join-Path $DataDir 'bridge.json')
+    try {
+        $pkgRoot = Join-Path (Split-Path -Parent $DataDir) 'Packages'
+        $leaf = Split-Path -Leaf $DataDir
+        foreach ($pkg in [IO.Directory]::GetDirectories($pkgRoot, 'Claude_*')) {
+            $paths += [IO.Path]::Combine($pkg, 'LocalCache', 'Local', $leaf, 'bridge.json')
+        }
+    } catch { }
+    $best = $null
+    foreach ($p in $paths) {
+        $fi = New-Object IO.FileInfo($p)
+        if ($fi.Exists -and (-not $best -or $fi.LastWriteTimeUtc -gt $best.LastWriteTimeUtc)) { $best = $fi }
+    }
+    return $best
+}
+
 function Read-CNBridge([string]$DataDir) {
-    $p = Join-Path $DataDir 'bridge.json'
-    if (-not (Test-Path -LiteralPath $p)) { return $null }
+    $f = Get-CNBridgeFile $DataDir
+    if (-not $f) { return $null }
+    $p = $f.FullName
     $j = [IO.File]::ReadAllText($p, [Text.Encoding]::UTF8) | ConvertFrom-Json
     if (-not $j) { return $null }
     $wins = @()
@@ -207,7 +228,7 @@ function Read-CNBridge([string]$DataDir) {
             $wins += $item
         }
     }
-    return @{ captured = [long]$j.captured_at; windows = $wins; model = [string]$j.model; mtime = (Get-Item -LiteralPath $p).LastWriteTimeUtc }
+    return @{ captured = [long]$j.captured_at; windows = $wins; model = [string]$j.model; mtime = $f.LastWriteTimeUtc; path = $p }
 }
 
 # ---------------------------------------------------------------- 官方用量接口（只读）

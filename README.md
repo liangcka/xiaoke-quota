@@ -52,6 +52,8 @@
 
 `%LOCALAPPDATA%\ClaudeNiang\`：设置（config.json）、自定义语录（quotes.txt）、插件写入的额度（bridge.json）、日志。
 
+Claude 桌面 App 是 MSIX 打包应用，插件在 App 里写的 bridge.json 会被 Windows 重定向到 `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Local\ClaudeNiang\`；挂件两处都会读，取最新的一份。
+
 ## 作者与贡献者
 
 - [liangcka](https://github.com/liangcka)：作者、维护者

@@ -15,8 +15,9 @@ Claude娘 桌面挂件的配套插件：在每个 Claude Code / Claude 桌面 Ap
 - **思考泡泡**：小圆点 → 中圆点 → 大泡依次弹出；点泡泡翻到下一页（5 小时剩余 → 本周剩余 → 一句语录），最后一页再点会收起；点小克重新弹出。
 - **命令**：`/xiaoke` 重新打开面板。
 
-## 署名与授权
+## 作者与授权
 
-- 代码：MIT（见 LICENSE）。
+- 作者：[liangcka](https://github.com/liangcka)
+- 代码：[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)（见 LICENSE），**禁止商用**；泡泡轮廓数据与按压参数取自 dsh-xiaoke-widget（MIT，Copyright (c) 2026 MeteorNOX），声明见 LICENSE 末尾。
 - 角色「小克」立绘与动画（`assets/` 下的图片、`.claude-plugin/icon.png`）来自 [aklnaaw/dsh-xiaoke-widget](https://github.com/aklnaaw/dsh-xiaoke-widget)，动画制作 AirsEDA，按 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) 授权：**仅限非商业使用**，再分发需署名并沿用相同授权。详见 `assets/LICENSE-ARTWORK` 与 `assets/PROVENANCE-upstream.md`。
-- 泡泡几何与按压手感参考 dsh-xiaoke-widget，整体灵感来自 GPT-Niang。
+- 整体灵感来自 GPT-Niang。

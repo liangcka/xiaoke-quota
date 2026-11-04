@@ -1,6 +1,10 @@
 {
   "name": "xiaoke-quota",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude娘：在 Claude 窗口旁的面板里陪你看剩余额度的看板娘（角色：小克）",
+  "author": { "name": "liangcka", "url": "https://github.com/liangcka" },
+  "homepage": "https://github.com/liangcka/xiaoke-quota",
+  "repository": "https://github.com/liangcka/xiaoke-quota",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "types": "./types/index.d.ts"
 }

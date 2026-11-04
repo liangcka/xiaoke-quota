@@ -2,6 +2,8 @@
 
 贴在 Claude 桌面 App 窗口右下角、陪你看剩余额度的看板娘，灵感来自 GPT-Niang（Codex 版）。角色是「小克」。
 
+作者：[liangcka](https://github.com/liangcka) · 许可：PolyForm Noncommercial 1.0.0（**禁止商用**）
+
 ## 组成
 
 | 部分 | 位置 | 作用 |
@@ -50,8 +52,13 @@
 
 `%LOCALAPPDATA%\ClaudeNiang\`：设置（config.json）、自定义语录（quotes.txt）、插件写入的额度（bridge.json）、日志。
 
+## 作者与贡献者
+
+- [liangcka](https://github.com/liangcka)：作者、维护者
+
 ## 署名与授权
 
-- 代码：MIT。
+- 代码：[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)（见 `LICENSE`）。可以出于个人、学习、研究、非营利等非商业目的自由使用、修改和分发，**禁止任何商业用途**；分发时须附上 `LICENSE` 及其中的 Required Notice。
+- 泡泡轮廓数据与按压参数取自 dsh-xiaoke-widget（MIT，Copyright (c) 2026 MeteorNOX），原许可声明见 `LICENSE` 末尾的第三方声明。
 - 角色「小克」立绘与动画（`app/assets/xiaoke/`、`plugin/xiaoke-quota/assets/` 及图标）来自 [aklnaaw/dsh-xiaoke-widget](https://github.com/aklnaaw/dsh-xiaoke-widget)，动画制作 AirsEDA，按 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) 授权：**仅限非商业使用**，再分发需署名并沿用相同授权。详见 `app/assets/xiaoke/LICENSE-ARTWORK`。
-- 泡泡几何与按压手感参考 dsh-xiaoke-widget；整体灵感来自 GPT-Niang。
+- 整体灵感来自 GPT-Niang。

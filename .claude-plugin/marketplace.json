@@ -1,6 +1,7 @@
 {
   "name": "xiaoke-local",
-  "owner": { "name": "ClaudeNiang" },
+  "description": "Claude娘：贴在 Claude 窗口右下角的额度看板娘的配套插件",
+  "owner": { "name": "liangcka", "url": "https://github.com/liangcka" },
   "plugins": [
     {
       "name": "xiaoke-quota",

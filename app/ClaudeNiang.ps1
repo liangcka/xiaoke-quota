@@ -14,7 +14,7 @@ if (-not (Test-Path -LiteralPath $DataDir)) { New-Item -ItemType Directory -Forc
 . (Join-Path $AppDir 'Collector.ps1')
 . (Join-Path $AppDir 'Common.ps1')
 
-$S = @{ Version = '1.1.0' }
+$S = @{ Version = '1.1.1' }
 $S.LogPath = Join-Path $DataDir 'log.txt'
 function Write-CNLog([string]$Msg) {
     try {
@@ -1025,7 +1025,7 @@ function Update-CNMenu($Menu) {
     Add-CNSep $Menu
     [void]$Menu.Items.Add((New-CNItem '隐藏（托盘图标可唤回）' { Hide-CNWindow }))
     [void]$Menu.Items.Add((New-CNItem ('关于 Claude娘 v' + $S.Version) {
-        Show-CNMessage ("Claude娘 v$($S.Version)`n陪你看 Claude 剩余额度的桌面看板娘。`n`n角色「小克」立绘与动画：aklnaaw/dsh-xiaoke-widget（动画制作 AirsEDA），CC BY-NC-SA 4.0，仅限非商业使用。`n泡泡样式与按压手感参考 dsh-xiaoke-widget，整体灵感来自 GPT-Niang。`n`n数据目录：$DataDir")
+        Show-CNMessage ("Claude娘 v$($S.Version)`n陪你看 Claude 剩余额度的桌面看板娘。`n`n作者：liangcka（github.com/liangcka/xiaoke-quota）`n代码许可：PolyForm Noncommercial 1.0.0，禁止商用。`n`n角色「小克」立绘与动画：aklnaaw/dsh-xiaoke-widget（动画制作 AirsEDA），CC BY-NC-SA 4.0，仅限非商业使用。`n泡泡轮廓与按压参数取自 dsh-xiaoke-widget（MIT），整体灵感来自 GPT-Niang。`n`n数据目录：$DataDir")
     }))
     [void]$Menu.Items.Add((New-CNItem '退出' { Exit-CN }))
 }

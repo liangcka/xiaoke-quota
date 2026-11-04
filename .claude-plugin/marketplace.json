@@ -1,0 +1,11 @@
+{
+  "name": "xiaoke-local",
+  "owner": { "name": "ClaudeNiang" },
+  "plugins": [
+    {
+      "name": "xiaoke-quota",
+      "source": "./plugin/xiaoke-quota",
+      "description": "Claude娘：把 Claude 官方剩余额度提供给桌面看板娘，并提供 /xiaoke 面板"
+    }
+  ]
+}

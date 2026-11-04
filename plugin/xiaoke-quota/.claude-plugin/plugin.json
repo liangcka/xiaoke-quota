@@ -1,0 +1,6 @@
+{
+  "name": "xiaoke-quota",
+  "version": "0.1.0",
+  "description": "Claude娘：在 Claude 窗口旁的面板里陪你看剩余额度的看板娘（角色：小克）",
+  "types": "./types/index.d.ts"
+}

@@ -4,7 +4,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Limit, Limits } from '../types'
-import { buildSvg, makePages, minRemaining, pickQuote, remaining, statusText, type FrameSet, type Timeline } from './svg'
+import { buildSvg, makePages, minRemaining, pickQuote, remaining, type FrameSet, type Timeline } from './svg'
 
 const PANE = 'xiaoke-quota'
 const SIZE = 300
@@ -41,7 +41,6 @@ async function saveLimits($: EngineInterface, items: readonly Limit[]) {
   }
   await update($, limits, () => value)
   await $.store.set('limits', value)
-  $.ui.status(statusText(value, value.at))
   await writeBridge($, value)
 }
 
@@ -65,6 +64,8 @@ async function writeBridge($: EngineInterface, value: Limits) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'xiaoke', description: '打开 Claude娘 面板（小克陪你看剩余额度）' })
+    // 不在输入框下方的状态栏显示额度（小克在窗口右下角已经显示了）；清掉旧版本留下的那一条
+    $.ui.status(undefined)
     // 先显示上次记下的额度，等这个会话第一次回复后再换成最新的
     const saved = await $.store.get('limits')
     if (isLimits(saved)) await update($, limits, () => saved)

@@ -14,7 +14,7 @@ if (-not (Test-Path -LiteralPath $DataDir)) { New-Item -ItemType Directory -Forc
 . (Join-Path $AppDir 'Collector.ps1')
 . (Join-Path $AppDir 'Common.ps1')
 
-$S = @{ Version = '1.1.1' }
+$S = @{ Version = '1.2.0' }
 $S.LogPath = Join-Path $DataDir 'log.txt'
 function Write-CNLog([string]$Msg) {
     try {
@@ -65,6 +65,8 @@ $Cfg = [ordered]@{
     left = $null; top = $null; scale = 1.5
     mode = 'follow'           # follow（贴在 Claude 窗口右下角，默认）/ desktop（自由拖动）
     topmost = $false; followDx = 0.0; followDy = 0.0
+    followAx = 'R'; followAy = 'B'   # 跟随模式以 Claude 窗口的哪条边为基准（见 Get-CNFollowPos）
+    facing = $null                   # 桌面模式保存位置时的朝向（1 / -1）
     muted = $false; volume = 0.55
     useApi = $true; autoQuoteMin = 0; lowMemory = $false
 }
@@ -75,6 +77,8 @@ if (Test-Path -LiteralPath $S.ConfigPath) {
     } catch { Write-CNLog '配置文件损坏，已使用默认值' }
 }
 $Cfg.scale = [Math]::Max(0.6, [Math]::Min(2.5, [double]$Cfg.scale))
+if ($Cfg.followAx -ne 'L') { $Cfg.followAx = 'R' }
+if ($Cfg.followAy -ne 'T') { $Cfg.followAy = 'B' }
 function Save-CNConfig {
     if ($RenderTest) { return }
     try { [IO.File]::WriteAllText($S.ConfigPath, ($Cfg | ConvertTo-Json), (New-Object Text.UTF8Encoding($false))) } catch { }
@@ -190,39 +194,106 @@ function Get-CNDpi {
     } catch { }
     try { $g = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $d = $g.DpiX / 96.0; $g.Dispose(); return $d } catch { return 1.0 }
 }
-function Get-CNWorkArea {
+function Get-CNWorkAreaAt([double]$X, [double]$Y) {
     $d = Get-CNDpi
-    $pt = New-Object Drawing.Point([int](($window.Left + $window.Width / 2) * $d), [int](($window.Top + $window.Height * 0.75) * $d))
-    $wa = [Windows.Forms.Screen]::FromPoint($pt).WorkingArea
+    $wa = [Windows.Forms.Screen]::FromPoint((New-Object Drawing.Point([int]($X * $d), [int]($Y * $d)))).WorkingArea
     return @{ X = $wa.X / $d; Y = $wa.Y / $d; W = $wa.Width / $d; H = $wa.Height / $d }
 }
+
+# 小克占挂件正方形的一个下角：朝左（未翻转）时在右下，翻转后在左下。下面把这块叫“小克方块”。
+function Get-CNFacing { if ($U.FlipT.ScaleX -lt 0) { return -1 }; return 1 }
+function Set-CNFlip([int]$F) { if ($F -lt 0) { $F = -1 } else { $F = 1 }; $U.FlipT.ScaleX = $F; $U.TextFlipT.ScaleX = $F }
+# 窗口左上角 → 小克方块
+function Get-CNCharSq([double]$L, [double]$T, [int]$F) {
+    $w = [double]$window.Width; $c = [double]$U.CharImg.Width
+    $x = $L; if ($F -gt 0) { $x = $L + $w - $c }
+    return @{ L = $x; T = $T + $w - $c; S = $c }
+}
+# 小克方块 → 窗口左上角
+function Get-CNWinPos([double]$SqL, [double]$SqT, [int]$F) {
+    $w = [double]$window.Width; $c = [double]$U.CharImg.Width
+    $l = $SqL; if ($F -gt 0) { $l = $SqL - ($w - $c) }
+    return @{ L = $l; T = $SqT - ($w - $c) }
+}
+# 立绘四周的透明边（按全部动画帧的不透明区域量出来的比例）：吸附和限位都按她看得见的身体来算
+$S.Pad = @{ X = 0.07; T = 0.15; B = 0.005 }
+function Get-CNBody($Sq) {
+    $z = $Sq.S   # 注意别叫 $s：PowerShell 变量不分大小写，会盖住全局的 $S
+    $pd = $S.Pad
+    return @{ L = $Sq.L + $z * $pd.X; R = $Sq.L + $z * (1 - $pd.X); T = $Sq.T + $z * $pd.T; B = $Sq.T + $z * (1 - $pd.B) }
+}
+function Get-CNWorkArea {
+    $sq = Get-CNCharSq $window.Left $window.Top (Get-CNFacing)
+    return (Get-CNWorkAreaAt ($sq.L + $sq.S / 2) ($sq.T + $sq.S / 2))
+}
+
+# 吸附：身体的某条边离这些线不到 SnapDist 就贴上去——
+#   Claude 窗口的四条边（贴在窗口里侧、并排站在窗口外侧、坐在窗口顶上），以及屏幕工作区的四条边；
+# 然后把身体限制在所在屏幕的工作区里：不会压到任务栏，也不会跑出屏幕。
+$S.SnapDist = 18
+function Find-CNSnap([double]$A, [double]$B, $Lines) {
+    $best = $null
+    foreach ($ln in $Lines) {
+        foreach ($e in $A, $B) {
+            $d = [double]$ln[0] - $e
+            if ([Math]::Abs($d) -le $S.SnapDist -and ($null -eq $best -or [Math]::Abs($d) -lt [Math]::Abs($best.d))) { $best = @{ d = $d; tag = $ln[1] } }
+        }
+    }
+    return $best
+}
+# 输入一个想要的窗口位置，返回吸附、限位之后的位置；X/Y 是吸附到的线（cL/cR/cT/cB = Claude 窗口，sL/sR/sT/sB = 屏幕）
+function Get-CNPlaced([double]$L, [double]$T, [bool]$Snap, $Rc = $null) {
+    $b = Get-CNBody (Get-CNCharSq $L $T (Get-CNFacing))
+    $wa = Get-CNWorkAreaAt (($b.L + $b.R) / 2) (($b.T + $b.B) / 2)
+    $waR = $wa.X + $wa.W; $waB = $wa.Y + $wa.H
+    $dx = 0.0; $dy = 0.0; $sx = ''; $sy = ''
+    if ($Snap) {
+        $g = $S.SnapDist
+        $xs = @(); $ys = @()
+        if ($Rc) {
+            # 先放 Claude 窗口的边：和屏幕边重合时（窗口最大化）算作贴在窗口上
+            # 只有在另一个方向上和窗口挨着时才吸附，免得隔着老远对齐到窗口边的延长线上
+            if ($b.B -gt $Rc.T - $g -and $b.T -lt $Rc.B + $g) { $xs += , @($Rc.L, 'cL'); $xs += , @($Rc.R, 'cR') }
+            if ($b.R -gt $Rc.L - $g -and $b.L -lt $Rc.R + $g) { $ys += , @($Rc.T, 'cT'); $ys += , @($Rc.B, 'cB') }
+        }
+        $xs += , @($wa.X, 'sL'); $xs += , @($waR, 'sR')
+        $ys += , @($wa.Y, 'sT'); $ys += , @($waB, 'sB')
+        $hx = Find-CNSnap $b.L $b.R $xs; if ($hx) { $dx = $hx.d; $sx = $hx.tag }
+        $hy = Find-CNSnap $b.T $b.B $ys; if ($hy) { $dy = $hy.d; $sy = $hy.tag }
+    }
+    if ($b.L + $dx -lt $wa.X) { $dx = $wa.X - $b.L } elseif ($b.R + $dx -gt $waR) { $dx = $waR - $b.R }
+    if ($b.T + $dy -lt $wa.Y) { $dy = $wa.Y - $b.T } elseif ($b.B + $dy -gt $waB) { $dy = $waB - $b.B }
+    return @{ L = $L + $dx; T = $T + $dy; X = $sx; Y = $sy }
+}
 function Set-CNDefaultPosition {
+    Set-CNFlip 1
     $d = Get-CNDpi
     $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
     $window.Left = ($wa.Right / $d) - $window.Width
     $window.Top = ($wa.Bottom / $d) - $window.Height
+    Repair-CNPosition $false
 }
 function Repair-CNPosition([bool]$Snap) {
-    $wa = Get-CNWorkArea
-    $w = $window.Width; $h = $window.Height
-    $l = $window.Left; $t = $window.Top; $th = 28
-    if ($Snap) {
-        if ([Math]::Abs($l - $wa.X) -lt $th) { $l = $wa.X }
-        if ([Math]::Abs(($l + $w) - ($wa.X + $wa.W)) -lt $th) { $l = $wa.X + $wa.W - $w }
-        if ([Math]::Abs(($t + $h) - ($wa.Y + $wa.H)) -lt $th) { $t = $wa.Y + $wa.H - $h }
-    }
-    $l = [Math]::Max($wa.X, [Math]::Min($l, $wa.X + $wa.W - $w))
-    $t = [Math]::Max($wa.Y - ($h * 0.35), [Math]::Min($t, $wa.Y + $wa.H - $h))
-    $window.Left = $l; $window.Top = $t
+    $rc = $null; if ($Snap -and $S.NativeOk) { $rc = Get-CNClaudeRect }
+    $p = Get-CNPlaced $window.Left $window.Top $Snap $rc
+    $window.Left = $p.L; $window.Top = $p.T
 }
-# 在屏幕左半边时整体翻转：小克到左下、泡泡到右上，始终朝向屏幕内侧
+# 小克在屏幕左半边时整体翻转：她到左下、泡泡到右上，始终朝向屏幕内侧。
+# 翻转时同时挪动窗口，让她本人留在原地（只有泡泡换边）。
+function Get-CNFacingAt($Sq) {
+    $cx = $Sq.L + $Sq.S / 2
+    $wa = Get-CNWorkAreaAt $cx ($Sq.T + $Sq.S / 2)
+    if ($cx -lt ($wa.X + $wa.W / 2)) { return -1 }
+    return 1
+}
 function Update-CNFacing {
     try {
-        $wa = Get-CNWorkArea
-        $cx = $window.Left + $window.Width / 2
-        $f = 1; if ($cx -lt ($wa.X + $wa.W / 2)) { $f = -1 }
-        $U.FlipT.ScaleX = $f
-        $U.TextFlipT.ScaleX = $f
+        $f0 = Get-CNFacing
+        $sq = Get-CNCharSq $window.Left $window.Top $f0
+        $f = Get-CNFacingAt $sq
+        if ($f -eq $f0) { return }
+        Set-CNFlip $f
+        $window.Left = (Get-CNWinPos $sq.L $sq.T $f).L
     } catch { }
 }
 
@@ -376,6 +447,12 @@ function Invoke-CNRelease {
     $U.SquashT.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, (New-CNAnim $fx 1.0 220 $S.EasePress))
     $U.SquashT.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty, (New-CNAnim $fy 1.0 220 $S.EasePress))
 }
+# 拖动中吸附上的一瞬间：轻轻“嗒”一声，再多压一下回到按住的样子
+function Invoke-CNSnapFx {
+    Invoke-CNSound 'snap'
+    $U.SquashT.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, (New-CNAnim 1.1 1.05 240 $S.EasePress))
+    $U.SquashT.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty, (New-CNAnim 0.8 0.88 240 $S.EasePress))
+}
 
 # ---------------------------------------------------------------- 音效（运行时合成的短音，不含任何外部音频文件）
 function New-CNTone([double]$F0, [double]$F1, [int]$Ms, [double]$Vol) {
@@ -402,6 +479,7 @@ function Update-CNSounds {
     $S.Snd = @{
         press   = New-Object Media.SoundPlayer(New-Object IO.MemoryStream(, (New-CNTone 520 430 55 $v)))
         release = New-Object Media.SoundPlayer(New-Object IO.MemoryStream(, (New-CNTone 760 980 70 $v)))
+        snap    = New-Object Media.SoundPlayer(New-Object IO.MemoryStream(, (New-CNTone 1250 1500 38 ($v * 0.6))))
     }
     foreach ($p in $S.Snd.Values) { try { $p.Load() } catch { } }
 }
@@ -764,14 +842,24 @@ function Set-CNScale([double]$Scale) {
     Request-CNSave
 }
 function Save-CNPosition {
-    if ($Cfg.mode -eq 'desktop') { $Cfg.left = [Math]::Round($window.Left, 1); $Cfg.top = [Math]::Round($window.Top, 1) }
+    if ($Cfg.mode -eq 'desktop') { $Cfg.left = [Math]::Round($window.Left, 1); $Cfg.top = [Math]::Round($window.Top, 1); $Cfg.facing = Get-CNFacing }
     Request-CNSave
 }
 function Set-CNMode([string]$Mode) {
     $Cfg.mode = $Mode
     if ($Mode -eq 'desktop') {
         $window.Topmost = [bool]$Cfg.topmost
-        if ($null -ne $Cfg.left -and $null -ne $Cfg.top) { $window.Left = [double]$Cfg.left; $window.Top = [double]$Cfg.top; Repair-CNPosition $false } else { Set-CNDefaultPosition }
+        if ($null -ne $Cfg.left -and $null -ne $Cfg.top) {
+            $window.Left = [double]$Cfg.left; $window.Top = [double]$Cfg.top
+            if ($null -ne $Cfg.facing) { Set-CNFlip ([int]$Cfg.facing) }
+            else {
+                # 旧版配置没记朝向：按旧规则（窗口中心在屏幕左半边就翻转）恢复，位置才对得上
+                $cx = $window.Left + $window.Width / 2
+                $wa = Get-CNWorkAreaAt $cx ($window.Top + $window.Height * 0.75)
+                if ($cx -lt ($wa.X + $wa.W / 2)) { Set-CNFlip -1 } else { Set-CNFlip 1 }
+            }
+            Repair-CNPosition $false
+        } else { Set-CNDefaultPosition }
         if (-not $S.UserHidden) { $window.Visibility = 'Visible' }
         Update-CNFacing
         $S.FollowTimer.Stop()
@@ -820,6 +908,34 @@ function Get-CNClaudeRect {
     $d = Get-CNDpi
     return @{ L = $r.Left / $d; T = $r.Top / $d; R = $r.Right / $d; B = $r.Bottom / $d }
 }
+# 跟随模式下小克方块相对 Claude 窗口某条边的偏移：
+#   followAx = R：方块右边 = 窗口右边 - followDx；L：方块左边 = 窗口左边 + followDx
+#   followAy = B：方块底边 = 窗口底边 - followDy；T：方块顶边 = 窗口顶边 + followDy
+# 旧版配置只有 followDx/followDy（相对右下角），正好就是 R/B。算出来之后同样限制在屏幕工作区里。
+function Get-CNFollowPos($Rc) {
+    $c = [double]$U.CharImg.Width
+    if ($Cfg.followAx -eq 'L') { $sqL = $Rc.L + [double]$Cfg.followDx } else { $sqL = $Rc.R - [double]$Cfg.followDx - $c }
+    if ($Cfg.followAy -eq 'T') { $sqT = $Rc.T + [double]$Cfg.followDy } else { $sqT = $Rc.B - [double]$Cfg.followDy - $c }
+    $f = Get-CNFacingAt @{ L = $sqL; T = $sqT; S = $c }
+    if ($f -ne (Get-CNFacing)) { Set-CNFlip $f }
+    $p = Get-CNWinPos $sqL $sqT $f
+    return (Get-CNPlaced $p.L $p.T $false)
+}
+# 拖完以后记下位置：贴着窗口哪条边就以那条边为准，没贴边就以离得近的一边为准，
+# 这样 Claude 窗口改变大小时，她还待在同一条边上（例如一直坐在标题栏上）
+function Save-CNFollowAnchor($Rc, $Snap) {
+    $sq = Get-CNCharSq $window.Left $window.Top (Get-CNFacing)
+    $c = $sq.S; $cx = $sq.L + $c / 2; $cy = $sq.T + $c / 2
+    $sx = ''; $sy = ''; if ($Snap) { $sx = [string]$Snap.X; $sy = [string]$Snap.Y }
+    $ax = 'R'
+    if ($sx -eq 'cL') { $ax = 'L' } elseif ($sx -ne 'cR' -and ($cx - $Rc.L) -lt ($Rc.R - $cx)) { $ax = 'L' }
+    $ay = 'B'
+    if ($sy -eq 'cT') { $ay = 'T' } elseif ($sy -ne 'cB' -and ($cy - $Rc.T) -lt ($Rc.B - $cy)) { $ay = 'T' }
+    $Cfg.followAx = $ax; $Cfg.followAy = $ay
+    if ($ax -eq 'L') { $Cfg.followDx = [Math]::Round($sq.L - $Rc.L, 2) } else { $Cfg.followDx = [Math]::Round($Rc.R - $sq.L - $c, 2) }
+    if ($ay -eq 'T') { $Cfg.followDy = [Math]::Round($sq.T - $Rc.T, 2) } else { $Cfg.followDy = [Math]::Round($Rc.B - $sq.T - $c, 2) }
+    Request-CNSave
+}
 $S.FollowTimer = New-Object Windows.Threading.DispatcherTimer
 $S.FollowTimer.Interval = [TimeSpan]::FromMilliseconds(100)
 $S.FollowTimer.add_Tick({
@@ -830,14 +946,12 @@ $S.FollowTimer.add_Tick({
             if ($window.Visibility -eq 'Visible') { Close-CNBubble; $window.Visibility = 'Hidden'; $S.AnimTimer.Stop() }
             return
         }
-        $l = $rc.R - [double]$Cfg.followDx - $window.Width
-        $t = $rc.B - [double]$Cfg.followDy - $window.Height
-        if ([Math]::Abs($window.Left - $l) -gt 0.5) { $window.Left = $l }
-        if ([Math]::Abs($window.Top - $t) -gt 0.5) { $window.Top = $t }
+        $p = Get-CNFollowPos $rc
+        if ([Math]::Abs($window.Left - $p.L) -gt 0.5) { $window.Left = $p.L }
+        if ([Math]::Abs($window.Top - $p.T) -gt 0.5) { $window.Top = $p.T }
         if ($window.Visibility -ne 'Visible') {
             $window.Visibility = 'Visible'
             if ($S.Frames) { $S.AnimTimer.Start() }
-            Update-CNFacing
             Write-CNLog ('跟随：Claude 窗口 {0:N0},{1:N0}-{2:N0},{3:N0}；挂件 {4:N0},{5:N0} {6:N0}x{7:N0}' -f $rc.L, $rc.T, $rc.R, $rc.B, $window.Left, $window.Top, $window.Width, $window.Height)
         }
         if ($S.Hwnd) { [ClaudeNiang.Win32]::PlaceAbove($S.Hwnd, $S.ClaudeHwnd) }
@@ -866,23 +980,19 @@ function Complete-CNPress([bool]$AsClick) {
         }
         return
     }
+    # 拖动过程中已经吸附、限位好了；松手后按需要翻转朝向（她本人不动），再记下位置
+    Update-CNFacing
     if ($Cfg.mode -eq 'follow') {
         $rc = Get-CNClaudeRect
-        if ($rc) {
-            $Cfg.followDx = [Math]::Round($rc.R - $window.Left - $window.Width, 1)
-            $Cfg.followDy = [Math]::Round($rc.B - $window.Top - $window.Height, 1)
-            Request-CNSave
-        }
+        if ($rc) { Save-CNFollowAnchor $rc $pr.snap }
     } else {
-        Repair-CNPosition $true
         Save-CNPosition
     }
-    Update-CNFacing
 }
 $U.CharImg.add_MouseLeftButtonDown({
     try {
         $_.Handled = $true
-        $S.Press = @{ start = (Get-CNCursorDip); left = $window.Left; top = $window.Top; moved = $false }
+        $S.Press = @{ start = (Get-CNCursorDip); left = $window.Left; top = $window.Top; moved = $false; snap = $null }
         Invoke-CNPress; Invoke-CNSound 'press'
         [void]$U.CharImg.CaptureMouse()
     } catch { Write-CNLog "按下处理：$($_.Exception.Message)" }
@@ -897,8 +1007,13 @@ $U.CharImg.add_MouseMove({
             if ([Math]::Abs($dx) + [Math]::Abs($dy) -lt 5) { return }
             $pr.moved = $true; $S.Dragging = $true
         }
-        $window.Left = [Math]::Round($pr.left + $dx)
-        $window.Top = [Math]::Round($pr.top + $dy)
+        # 跟着鼠标走，靠近 Claude 窗口或屏幕的边时吸附上去，并且始终待在工作区里（不压任务栏）
+        $rc = $null; if ($S.NativeOk) { $rc = Get-CNClaudeRect }
+        $p = Get-CNPlaced ([Math]::Round($pr.left + $dx)) ([Math]::Round($pr.top + $dy)) $true $rc
+        $window.Left = $p.L; $window.Top = $p.T
+        $old = $pr.snap
+        if (($p.X -and (-not $old -or $old.X -ne $p.X)) -or ($p.Y -and (-not $old -or $old.Y -ne $p.Y))) { Invoke-CNSnapFx }
+        $pr.snap = $p
     } catch { }
 })
 $U.CharImg.add_MouseLeftButtonUp({
@@ -954,6 +1069,19 @@ function Invoke-CNBridgeInstall {
         default     { Show-CNMessage ("安装失败（{0}）。请检查 ~/.claude/settings.json 是否是合法的 JSON。" -f $r.code) 'Warning' }
     }
 }
+function Set-CNStartModeUI([string]$Mode) {
+    try {
+        Set-CNStartMode $Mode $AppDir
+        switch ($Mode) {
+            'claude' { Show-CNText '好～以后 Claude 一打开我就来，Claude 关掉我也跟着下班。' 6 }
+            'logon'  { Show-CNText '好～以后一开机我就在啦。' 4 }
+            default  { Show-CNText '好～需要我的时候双击「打开Claude娘」就行。' 5 }
+        }
+    } catch {
+        Write-CNLog "自动启动设置失败：$($_.Exception.Message)"
+        Show-CNMessage ("自动启动设置失败：`n" + $_.Exception.Message) 'Warning'
+    }
+}
 function Update-CNMenu($Menu) {
     $Menu.Items.Clear()
     [void]$Menu.Items.Add((New-CNItem '查看额度' { Start-CNCollect $true; Show-CNQuota }))
@@ -979,7 +1107,7 @@ function Update-CNMenu($Menu) {
     if ($Cfg.mode -ne 'desktop') { $tp.IsEnabled = $false }
     [void]$pos.Items.Add($tp)
     [void]$pos.Items.Add((New-CNItem '重置位置' {
-        if ($Cfg.mode -eq 'desktop') { Set-CNDefaultPosition; Save-CNPosition; Update-CNFacing } else { $Cfg.followDx = 0.0; $Cfg.followDy = 0.0; Request-CNSave }
+        if ($Cfg.mode -eq 'desktop') { Set-CNDefaultPosition; Save-CNPosition; Update-CNFacing } else { $Cfg.followDx = 0.0; $Cfg.followDy = 0.0; $Cfg.followAx = 'R'; $Cfg.followAy = 'B'; Request-CNSave }
     }))
     [void]$Menu.Items.Add($pos)
 
@@ -1021,7 +1149,12 @@ function Update-CNMenu($Menu) {
         $Cfg.lowMemory = -not [bool]$Cfg.lowMemory; Request-CNSave
         if ($Cfg.lowMemory) { Show-CNStaticChar; [GC]::Collect() } else { $S.FrameSet = ''; Update-CNExpression }
     } ([bool]$Cfg.lowMemory)))
-    [void]$Menu.Items.Add((New-CNItem '开机自启' { Set-CNAutostart (-not (Test-CNAutostart)) $AppDir } (Test-CNAutostart)))
+    $st = New-CNItem '自动启动'
+    $sm = Get-CNStartMode
+    [void]$st.Items.Add((New-CNItem '随 Claude 启动（Claude 打开时出现、退出时一起退出）' { Set-CNStartModeUI 'claude' } ($sm -eq 'claude')))
+    [void]$st.Items.Add((New-CNItem '开机自启' { Set-CNStartModeUI 'logon' } ($sm -eq 'logon')))
+    [void]$st.Items.Add((New-CNItem '不自动启动' { Set-CNStartModeUI 'off' } ($sm -eq 'off')))
+    [void]$Menu.Items.Add($st)
     Add-CNSep $Menu
     [void]$Menu.Items.Add((New-CNItem '隐藏（托盘图标可唤回）' { Hide-CNWindow }))
     [void]$Menu.Items.Add((New-CNItem ('关于 Claude娘 v' + $S.Version) {
@@ -1193,6 +1326,31 @@ if ($SelfTest -gt 0) {
         { Write-CNLog ("自检：按压恢复 scaleX={0:N3} scaleY={1:N3}" -f $U.SquashT.ScaleX, $U.SquashT.ScaleY) },
         { Set-CNScale 1.4 },
         { Set-CNScale 1.0 },
+        {   # 吸附与限位：用一个假想的 Claude 窗口，由“想让身体的右边/底边在哪”反推窗口位置
+            $rc = @{ L = 400.0; T = 200.0; R = 1400.0; B = 900.0 }
+            $f = Get-CNFacing; $c = [double]$U.CharImg.Width; $bw = $c * (1 - 2 * $S.Pad.X)
+            foreach ($k in @(@('窗口右下里侧', ($rc.R - 10), ($rc.B - 12)), @('坐在窗口顶上', 1100.0, ($rc.T + 9)), @('窗口右侧外面', ($rc.R + 14 + $bw), 700.0), @('拖进任务栏', 900.0, 100000.0), @('不靠边', 1000.0, 600.0))) {
+                $wp = Get-CNWinPos ($k[1] - $c * (1 - $S.Pad.X)) ($k[2] - $c * (1 - $S.Pad.B)) $f
+                $p = Get-CNPlaced $wp.L $wp.T $true $rc
+                $b = Get-CNBody (Get-CNCharSq $p.L $p.T $f)
+                Write-CNLog ('自检：吸附[{0}] X={1} Y={2} 身体 L{3:N1} T{4:N1} R{5:N1} B{6:N1}' -f $k[0], $p.X, $p.Y, $b.L, $b.T, $b.R, $b.B)
+            }
+            $wa = Get-CNWorkArea
+            Write-CNLog ('自检：工作区 {0:N0},{1:N0} {2:N0}x{3:N0}（底边 {4:N0}）' -f $wa.X, $wa.Y, $wa.W, $wa.H, ($wa.Y + $wa.H))
+        },
+        {   # 跟随锚点：坐在窗口顶上并记下锚点，窗口变大后应该还坐在顶边上
+            $saved = @($Cfg.followAx, $Cfg.followAy, $Cfg.followDx, $Cfg.followDy)
+            $rc = @{ L = 400.0; T = 200.0; R = 1400.0; B = 900.0 }
+            $f = Get-CNFacing; $c = [double]$U.CharImg.Width
+            $wp = Get-CNWinPos (1100.0 - $c * (1 - $S.Pad.X)) ($rc.T + 5 - $c * (1 - $S.Pad.B)) $f
+            $p = Get-CNPlaced $wp.L $wp.T $true $rc
+            $window.Left = $p.L; $window.Top = $p.T
+            Save-CNFollowAnchor $rc $p
+            $q = Get-CNFollowPos @{ L = 300.0; T = 200.0; R = 1500.0; B = 1100.0 }
+            $b = Get-CNBody (Get-CNCharSq $q.L $q.T (Get-CNFacing))
+            Write-CNLog ('自检：跟随锚点 {0}{1} dx={2} dy={3}；窗口变大后身体底边 {4:N1}（应为 200）右边 {5:N1}（应为 1200）' -f $Cfg.followAx, $Cfg.followAy, $Cfg.followDx, $Cfg.followDy, $b.B, $b.R)
+            $Cfg.followAx = $saved[0]; $Cfg.followAy = $saved[1]; $Cfg.followDx = $saved[2]; $Cfg.followDy = $saved[3]
+        },
         { $S.Worried = $true; Update-CNExpression },
         { $S.Worried = $false; Update-CNExpression },
         { Set-CNMode 'follow' },
@@ -1216,6 +1374,13 @@ if ($SelfTest -gt 0) {
 }
 
 [void]$app.Run()
+# 后台采集可能还卡在网络请求上：不等它，直接结束进程。否则 Runspace.Close() 会一直等，
+# 单实例锁也一直占着，“随 Claude 启动”下次就叫不出 Claude娘 了。
+if ($S.Job -and -not $S.Job.H.IsCompleted) {
+    try { $S.Mutex.ReleaseMutex() } catch { }
+    Write-CNLog '退出（未等后台采集结束）'
+    [Environment]::Exit(0)
+}
 try { $S.Rs.Close() } catch { }
 try { $S.Mutex.ReleaseMutex() } catch { }
 Write-CNLog '退出'

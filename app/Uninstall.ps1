@@ -16,11 +16,12 @@ try {
         Where-Object { $_.CommandLine -like '*ClaudeNiang.ps1*' -and $_.ProcessId -ne $PID } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 } catch { }
+Stop-CNWatcher
 Write-Host '  √ 已退出' -ForegroundColor Green
 
-# 2. 移除开机自启
-Set-CNAutostart $false $AppDir
-Write-Host '  √ 已移除开机自启' -ForegroundColor Green
+# 2. 移除自动启动（开机自启 / 随 Claude 启动）
+Set-CNStartMode 'off' $AppDir
+Write-Host '  √ 已移除自动启动' -ForegroundColor Green
 
 # 3. 卸载配套插件
 $a = Read-Host '是否同时卸载 Claude 里的配套插件 xiaoke-quota？[Y/n]'

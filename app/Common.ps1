@@ -10,25 +10,71 @@ if (-not (Get-Command Get-CNClaudeDir -ErrorAction SilentlyContinue)) {
 
 function Get-CNDataDir { return (Join-Path $env:LOCALAPPDATA 'ClaudeNiang') }
 
-# ---------------------------------------------------------------- 开机自启（当前用户“启动”文件夹快捷方式）
+# ---------------------------------------------------------------- 自动启动（当前用户“启动”文件夹快捷方式）
+#   claude：随 Claude 启动——登录后常驻一个很小的 ClaudeNiangWatch.exe（见 Watch.cs），Claude 桌面 App 打开时叫出 Claude娘、退出时一起退出
+#   logon ：开机自启——登录后直接启动 Claude娘
+#   off   ：不自动启动
 
 function Get-CNStartupLink { return (Join-Path ([Environment]::GetFolderPath('Startup')) 'Claude娘.lnk') }
+function Get-CNWatchLink { return (Join-Path ([Environment]::GetFolderPath('Startup')) 'Claude娘（随 Claude 启动）.lnk') }
+function Get-CNWatcherExe { return (Join-Path (Get-CNDataDir) 'ClaudeNiangWatch.exe') }
 
-function Test-CNAutostart { return (Test-Path -LiteralPath (Get-CNStartupLink)) }
+function Get-CNStartMode {
+    if (Test-Path -LiteralPath (Get-CNWatchLink)) { return 'claude' }
+    if (Test-Path -LiteralPath (Get-CNStartupLink)) { return 'logon' }
+    return 'off'
+}
 
-function Set-CNAutostart([bool]$On, [string]$AppDir) {
-    $lnk = Get-CNStartupLink
-    if ($On) {
-        $sh = New-Object -ComObject WScript.Shell
-        $sc = $sh.CreateShortcut($lnk)
-        $sc.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
-        $sc.Arguments = '"' + (Join-Path $AppDir 'launch.vbs') + '"'
-        $sc.WorkingDirectory = $AppDir
-        $sc.Description = 'Claude娘 桌面看板娘'
-        $sc.Save()
-    } elseif (Test-Path -LiteralPath $lnk) {
-        Remove-Item -LiteralPath $lnk -Force
+function New-CNShortcut([string]$Lnk, [string]$Target, [string]$Arguments, [string]$WorkDir, [string]$Desc) {
+    $sh = New-Object -ComObject WScript.Shell
+    $sc = $sh.CreateShortcut($Lnk)
+    $sc.TargetPath = $Target
+    $sc.Arguments = $Arguments
+    $sc.WorkingDirectory = $WorkDir
+    $sc.Description = $Desc
+    $sc.Save()
+}
+
+function Stop-CNWatcher {
+    Get-Process -Name 'ClaudeNiangWatch' -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill(); [void]$_.WaitForExit(2000) } catch { } }
+}
+
+# 把 Watch.cs 编译成 exe（源码变了才重新编译）
+function Install-CNWatcher([string]$AppDir) {
+    $src = Join-Path $AppDir 'Watch.cs'
+    $exe = Get-CNWatcherExe
+    $stamp = $exe + '.sha256'
+    $hash = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+    if ((Test-Path -LiteralPath $exe) -and (Test-Path -LiteralPath $stamp) -and ([IO.File]::ReadAllText($stamp).Trim() -eq $hash)) { return $exe }
+    $dir = Split-Path -Parent $exe
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    Stop-CNWatcher
+    if (Test-Path -LiteralPath $exe) { Remove-Item -LiteralPath $exe -Force }
+    Add-Type -Path $src -OutputAssembly $exe -OutputType WindowsApplication -ErrorAction Stop
+    [IO.File]::WriteAllText($stamp, $hash)
+    return $exe
+}
+
+# 现在就把小助手跑起来（不用等下次登录）；--baseline：Claude 此刻已经开着的话不重复叫出挂件
+function Start-CNWatcher([string]$AppDir) {
+    $exe = Install-CNWatcher $AppDir
+    Start-Process -FilePath $exe -ArgumentList @(('"' + $AppDir + '"'), ('"' + (Get-CNWatchLink) + '"'), '--baseline') -WorkingDirectory $AppDir
+}
+
+function Set-CNStartMode([string]$Mode, [string]$AppDir) {
+    if ($Mode -eq 'claude') { $exe = Install-CNWatcher $AppDir }   # 先编译，失败就保持原样
+    foreach ($l in (Get-CNStartupLink), (Get-CNWatchLink)) { if (Test-Path -LiteralPath $l) { Remove-Item -LiteralPath $l -Force } }
+    switch ($Mode) {
+        'claude' {
+            New-CNShortcut (Get-CNWatchLink) $exe (('"' + $AppDir + '"') + ' ' + ('"' + (Get-CNWatchLink) + '"')) $AppDir 'Claude娘：Claude 桌面 App 打开时自动出现'
+            Start-CNWatcher $AppDir
+        }
+        'logon' {
+            New-CNShortcut (Get-CNStartupLink) (Join-Path $env:WINDIR 'System32\wscript.exe') ('"' + (Join-Path $AppDir 'launch.vbs') + '"') $AppDir 'Claude娘 桌面看板娘'
+        }
     }
+    # 其他模式下小助手发现自己的快捷方式没了会自己退出；这里直接结束，立刻生效
+    if ($Mode -ne 'claude') { Stop-CNWatcher }
 }
 
 # ---------------------------------------------------------------- 配套插件 xiaoke-quota（给挂件提供官方额度）
